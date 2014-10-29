@@ -386,7 +386,7 @@ class S3DocumentLibrary(S3Model):
         doc = form_vars.file
 
         if not document:
-            encoded_file = form_vars.get("imagecrop-data", None)
+            encoded_file = form_vars.get("imagecrop-data-add", None)
             if encoded_file:
                 import base64
                 import uuid

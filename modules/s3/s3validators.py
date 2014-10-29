@@ -2674,7 +2674,7 @@ class IS_PROCESSED_IMAGE(Validator):
         if file not in ("", None):
             return (file, None)
 
-        encoded_file = vars.get("imagecrop-data")
+        encoded_file = vars.get("imagecrop-data-add")
         file = self.file_cb()
 
         if not (encoded_file or file):

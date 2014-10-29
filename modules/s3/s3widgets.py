@@ -2463,8 +2463,8 @@ class S3ImageCropWidget(FormWidget):
             @param value: value if any
             @param download_url: Download URL for saved Image
         """
-        T = current.T
 
+        T = current.T
         script_dir = "/%s/static/scripts" % current.request.application
         
         s3 = current.response.s3
@@ -2500,23 +2500,31 @@ i18n.upload_image='%s' ''' % (T("Please select a valid image!"),
         sheet = "plugins/jquery.Jcrop.css"
         if sheet not in stylesheets:
             stylesheets.append(sheet)
+        
+        # Check for InlineComponent
+        map_name = {"0": "edit",
+                    "none": "add",
+                    "default": "default"}
 
+        _name = field.name.split("_")
+        if "i" in _name:
+            # Decide type for Client-Side depending upon 
+            # call from InlineComponent
+            w_type = map_name[_name[-1]]
+        else:
+            w_type = "add" 
+        
         attr = self._attributes(field, {
                 "_type": "file",
-                "_class": "imagecrop-upload"
+                "_class": "imagecrop-upload-" + w_type
             }, **attributes)
 
         elements = [INPUT(_type="hidden", _name="imagecrop-points")]
         append = elements.append
 
-        append(DIV(_class="tooltip",
-                   _title="%s|%s" % \
-                 (T("Crop Image"),
-                 T("Select an image to upload. You can crop this later by opening this record."))))
-
         # Set up the canvas
         # Canvas is used to scale and crop the Image on the client side
-        canvas = TAG["canvas"](_class="imagecrop-canvas",
+        canvas = TAG["canvas"](_class="imagecrop-canvas-" + w_type,
                                _style="display:none")
         image_bounds = self.image_bounds
 
@@ -2534,29 +2542,29 @@ i18n.upload_image='%s' ''' % (T("Please select a valid image!"),
             btn_class = "imagecrop-btn"
                 
         buttons = [ A(T("Enable Crop"),
-                      _id="select-crop-btn",
+                      _id="select-crop-btn-" + w_type,
                       _class=btn_class,
                       _role="button"),
                     A(T("Crop Image"),
-                      _id="crop-btn",
+                      _id="crop-btn-" + w_type,
                       _class=btn_class,
                       _role="button"),
                     A(T("Cancel"),
-                      _id="remove-btn",
+                      _id="remove-btn-" + w_type,
                       _class="imagecrop-btn")
                     ]
 
         parts = [LEGEND(T("Uploaded Image"))] + buttons + \
                 [HR(_style="display:none"),
-                 IMG(_id="uploaded-image",
+                 IMG(_id="uploaded-image-" + w_type,
                      _style="display:none;")]
 
         display_div = FIELDSET(parts,
-                               _class="image-container")
+                               _class="image-container-" + w_type)
 
         crop_data_attr = { "_type": "hidden",
-                           "_name": "imagecrop-data",
-                           "_class": "imagecrop-data" }
+                           "_name": "imagecrop-data-" + w_type,
+                           "_class": "imagecrop-data-" + w_type }
 
         if value and download_url:
             if callable(download_url):
@@ -2566,19 +2574,19 @@ i18n.upload_image='%s' ''' % (T("Please select a valid image!"),
             # Add Image 
             crop_data_attr["_value"] = url
             append(FIELDSET(LEGEND(A(T("Upload different Image")),
-                                   _id="upload-title"),
+                                   _id="upload-title-" + w_type),
                             DIV(INPUT(**attr),
                                 DIV(T("or Drop here"),
-                                    _class="imagecrop-drag"),
-                                _id="upload-container",
+                                    _class="imagecrop-drag-" + w_type),
+                                _id="upload-container-" + w_type,
                                 _style="display: none")))
         else:
             append(FIELDSET(LEGEND(T("Upload Image"),
-                                   _id="upload-title"),
+                                   _id="upload-title-" + w_type),
                             DIV(INPUT(**attr),
                                 DIV(T("or Drop here"),
-                                    _class="imagecrop-drag"),
-                                _id="upload-container")))
+                                    _class="imagecrop-drag-" + w_type),
+                                _id="upload-container-" + w_type)))
 
         append(INPUT(**crop_data_attr))
         append(display_div)
@@ -2588,6 +2596,11 @@ i18n.upload_image='%s' ''' % (T("Please select a valid image!"),
         uid = "cropwidget-%s" % uuid.uuid4().hex
         for element in elements:
             element.attributes["_data-uid"] = uid
+
+        script = '''S3.imageCropWidget('%s')''' % w_type
+        jquery_ready = s3.jquery_ready
+        if script not in jquery_ready: # Prevents loading twice when form has errors
+            jquery_ready.append(script)
 
         return DIV(elements)
 

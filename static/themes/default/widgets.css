@@ -1161,7 +1161,8 @@ li.ui-draggable-dragging {
     background: none repeat scroll 0 0 #cfdde7;
 }
 
-.imagecrop-drag {
+.imagecrop-drag-add,
+.imagecrop-drag-edit {
     font-weight: bold;
     text-align: center;
     padding: 3em 0;
@@ -1172,7 +1173,8 @@ li.ui-draggable-dragging {
     cursor: default;
 }
 
-.imagecrop-drag.hover {
+.imagecrop-drag-add-hover,
+.imagecrop-drag-edit-hover {
     border-style: solid;
     background-color: #F7F8F9;
 }

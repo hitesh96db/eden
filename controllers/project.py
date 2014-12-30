@@ -791,8 +791,6 @@ def role():
 def member():
     """ RESTful CRUD Controller """
     
-    s3.prep = lambda r: r.representation == "s3json"
-
     return s3_rest_controller()
 
 # =============================================================================
@@ -1021,6 +1019,13 @@ $('#submit_record__row input').click(function(){
                  SCRIPT(script))
 
     return XML(output)
+
+def comment():
+    """ 
+        RESTful CRUD controller 
+        for ?format=msg
+    """
+    return s3_rest_controller()
 
 # =============================================================================
 # Campaigns

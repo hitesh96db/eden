@@ -34,6 +34,9 @@ settings.ui.filter_formstyle = "table_inline"
 # - Disabled until tested
 settings.ui.datatables_responsive = False
 
+# Message
+settings.msg.notify_email_format = "html"
+
 # Should users be allowed to register themselves?
 settings.security.self_registration = True
 settings.auth.registration_requires_verification = True
@@ -533,10 +536,81 @@ def customise_project_task_controller(**attr):
                                 ), rheader_tabs)
         return rheader
 
+    # Custom postp
+    standard_postp = s3.postp
+    def custom_postp(r, output):
+        # Call standard postp
+        if callable(standard_postp):
+            output = standard_postp(r, output)
+        if r.component_name == "member" and r.component_id and \
+            r.http == "DELETE":
+            # Remove Task subscription
+            sub = subscriptions()
+            sub.remove_task_subscription(str(r.id))
+
+        return output
+    s3.postp = custom_postp
+ 
     attr["rheader"] = task_rheader
     return attr
 
 settings.customise_project_task_controller = customise_project_task_controller
+
+# -----------------------------------------------------------------------------
+def customise_project_member_controller(**attr):
+
+    request = current.request
+    s3 = current.response.s3
+    task_id = request.get_vars["task_id"]
+    
+    standard_prep = s3.prep
+    def custom_prep(r):
+        # Call standard prep
+        if callable(standard_prep):
+            result = standard_prep(r)
+            if not result:
+                return False
+        if r.representation == "s3json":
+            # Check if already a Member ?
+            task_id = r.get_vars.task_id
+            db = current.db
+            mtable = current.s3db.project_member
+            user = current.auth.s3_logged_in_person()
+            query = (mtable.task_id == task_id) & \
+                    (mtable.person_id == user)
+            rows = db(query).select(mtable.id).first()
+            if rows:
+                # Bypass request
+                result = {"bypass": True}
+                item = dict(status="success",
+                            statuscode=200,
+                            created=[rows.id])
+                result["output"] = {"item": json.dumps(item)}
+                return result
+            else:
+                return True
+        else:
+            return False
+        
+    s3.prep = custom_prep
+    # Custom postp
+    standard_postp = s3.postp
+    def custom_postp(r, output):
+        # Call standard postp
+        if callable(standard_postp):
+            output = standard_postp(r, output)
+        if "success" in output and \
+            r.http == "PUT":
+            # User added as a Member
+            # Subscribe user to task updates
+            sub = subscriptions()
+            sub.add_task_subscription(task_id)    
+        return output
+
+    s3.postp = custom_postp
+    return attr
+
+settings.customise_project_member_controller = customise_project_member_controller
 
 # -----------------------------------------------------------------------------
 def get_member_data(task_id,
@@ -767,6 +841,81 @@ def customise_project_task_resource(r, tablename):
 
 settings.customise_project_task_resource = customise_project_task_resource
 
+def project_comment_onaccept(form):
+    """
+        After DB I/O for Task Comments
+        - Add User as a Member of the task
+    """
+    s3db = current.s3db
+    db = current.db
+    user = current.auth.s3_logged_in_person()
+    rtable = s3db.project_role
+    mtable = s3db.project_member
+    task_id = current.request.args[0]
+
+    if user:
+        query = (mtable.person_id == user) & \
+                (mtable.task_id == task_id)
+        member = db(query).select(mtable.role_id).first()
+        if not member:
+            query = (rtable.role == "Watching") & \
+                    (rtable.deleted == False)
+            role = db(query).select(rtable.id).first()
+            if role:
+                # Add User as a Member
+                mtable.insert(task_id=task_id,
+                              person_id=user,
+                              role_id=role.id)
+                # Subscribe user to task updates
+                sub = subscriptions()
+                sub.add_task_subscription(task_id)
+
+def customise_project_comment_resource(r, tablename):
+
+    crud_strings = current.response.s3.crud_strings
+    T = current.T
+    s3db = current.s3db
+    from s3 import s3_unicode
+
+    crud_strings[tablename] = Storage(
+        title_list = T("Task Comments")
+    )
+    task_id = r.id
+    # Notification Fields
+    s3db.configure(tablename,
+                   notify_fields = ["task_id",
+                                    "created_by",
+                                    "body"],
+                   onaccept = project_comment_onaccept
+                   )
+
+    # Custom Represent to change represent link
+    DefaultTaskRepresent = s3db.project_TaskRepresent
+    class custom_TaskRepresent(DefaultTaskRepresent):
+        """
+            Custom Represent to include public 'URL' in Task link
+        """
+        def link(self, k, v, row=None):
+            """
+                @param k: the key
+                @param v: the representation of the key
+                @param row: the row with this key (unused in the base class)
+            """
+            k = s3_unicode(k)
+            public_url = settings.get_base_public_url()
+            if self.linkto:
+                task_url = self.linkto
+            else:
+                task_url = URL(c="project", f="task", args=["[id]"])
+            task_url = task_url.replace("[id]", k) \
+                               .replace("%5Bid%5D", k)
+            link = public_url + task_url
+            return A(v, _href=link)
+
+    s3db.project_comment.task_id.represent = custom_TaskRepresent(show_link=True)
+
+settings.customise_project_comment_resource = customise_project_comment_resource
+
 # -----------------------------------------------------------------------------
 def customise_delphi_problem_controller(**attr):
 
@@ -962,7 +1111,314 @@ def customise_pr_contact_controller(**attr):
 
 settings.customise_pr_contact_controller = customise_pr_contact_controller
 
-# -----------------------------------------------------------------------------
+def custom_render(resource, data, meta_data, format=None):
+    """
+        Custom Method to pre-render the contents for the message template
+        
+        @param resource: the S3Resource
+        @param data: the data returned from S3Resource.select
+        @param meta_data: the meta data for the notification
+        @param format: the contents format ("text" or "html")
+    """
+
+    rows = data["rows"]
+
+    # ** Styling must be inline for HTML emails **
+    panel_body = "border-radius:4px;\
+box-shadow:0 1px 1px rgba(0, 0, 0, 0.05);\
+background-color:#fff;\
+border:1px solid transparent;\
+border-color:#ddd;"
+    panel_title = "border-top-left-radius:3px;\
+border-top-right-radius:3px;\
+padding:10px 15px;\
+background-color:#f5f5f5;\
+color:#333;\
+border-bottom:1px solid #ddd;"
+    panel_heading = "color:inherit;\
+font-size:14px;\
+margin-bottom:0px;\
+margin-top:0px;\
+border-color:#ddd;"
+    panel_contents = "padding:15px;"
+    elements = []
+    append = elements.append
+    for row in rows:
+        comment_title = TAG[""](B(row["project_comment.created_by"]),
+                                XML("&nbsp;&nbsp; commented on &nbsp;&nbsp;"),
+                                B(row["project_comment.task_id"]))
+        comment_body = XML(row["project_comment.body"])
+        comment_container = DIV(DIV(DIV(comment_title,
+                                        _style=panel_heading),
+                                    _style=panel_title),
+                                DIV(comment_body,
+                                    _style=panel_contents),
+                                _style=panel_body)
+        append(comment_container)
+        append(BR())
+    output = {"body": DIV(*elements)}
+    output.update(meta_data)
+    return output
+
+settings.msg.notify_renderer = custom_render
+ 
+# =============================================================================
+class subscriptions(object):
+    """ Manage subscriptions """
+
+    def __init__(self):
+        
+        # Available resources
+        resources = [dict(resource="project_comment",
+                          url="project/comment",
+                          label=T("Updates"))
+                     ]
+        self.rfilter = "comment.task_id__belongs"
+        # Get current subscription settings resp. from defaults
+        self.subscription = self.get_subscription()
+        subscription = self.subscription
+
+        subscription["subscribe"] = [resources[0]]
+        subscription["notify_on"] = ["new","upd"]
+        subscription["frequency"] = "immediately"
+        subscription["method"] = ["EMAIL"]
+        
+        
+    def remove_task_subscription(self, task_id):
+        """ 
+            Remove Task from subscription filter 
+        """
+
+        subscription = self.subscription
+        rfilter = self.rfilter
+        s3db = current.s3db
+        db = current.db
+        ids = subscription["get_vars"][rfilter].split(",")
+        if task_id in ids:
+            ids.remove(task_id)
+        if len(ids) == 0:
+            # Delete Subscription
+            stable = s3db.pr_subscription
+            db(stable.id == subscription["id"]).update(deleted=True)
+            # No need for update_subscription
+            return True
+        else:
+            ids = ",".join(ids)
+
+        sfilter = [[rfilter, ids]]
+        subscription["filters"] = json.dumps(sfilter)
+
+        return self.update_subscription()
+        
+    # -------------------------------------------------------------------------
+    def add_task_subscription(self, task_id):
+        """ 
+            Add Task to subscription filter 
+        """
+
+        subscription = self.subscription
+        rfilter = self.rfilter
+
+        if subscription["get_vars"].get(rfilter, None):
+            # Add task_id to filter
+            ids = subscription["get_vars"][rfilter]
+            ids += "," + task_id
+        else:
+            ids = task_id    
+
+        sfilter = [[rfilter, ids]]
+        subscription["filters"] = json.dumps(sfilter)    
+        return self.update_subscription()
+
+    # -------------------------------------------------------------------------
+    def get_subscription(self):
+        """ 
+            Get current subscription settings 
+        """
+
+        db = current.db
+        s3db = current.s3db
+
+        pe_id = current.auth.user.pe_id
+
+        stable = s3db.pr_subscription
+        ftable = s3db.pr_filter
+        query = (stable.pe_id == pe_id) & \
+                (stable.deleted != True)
+        left = ftable.on(ftable.id == stable.filter_id)
+        row = db(query).select(stable.id,
+                               stable.notify_on,
+                               stable.frequency,
+                               ftable.id,
+                               ftable.query,
+                               left=left,
+                               limitby=(0, 1)).first()
+
+        output = {"pe_id": pe_id}
+
+        get_vars = {}
+        if row:
+            # Existing settings
+            s = getattr(row, "pr_subscription")
+            f = getattr(row, "pr_filter")
+
+            rtable = s3db.pr_subscription_resource
+            query = (rtable.subscription_id == s.id) & \
+                    (rtable.deleted != True)
+            rows = db(query).select(rtable.id,
+                                    rtable.resource,
+                                    rtable.url,
+                                    rtable.last_check_time,
+                                    rtable.next_check_time)
+            if f.query:
+                filters = json.loads(f.query)
+                for k, v in filters:
+                    if v is None:
+                        continue
+                    if k in get_vars:
+                        if type(get_vars[k]) is list:
+                            get_vars[k].append(v)
+                        else:
+                            get_vars[k] = [get_vars[k], v]
+                    else:
+                        get_vars[k] = v
+
+            output.update({"id": s.id,
+                           "filter_id": f.id,
+                           "get_vars" : get_vars,
+                           "resources": rows,
+                           "notify_on": s.notify_on,
+                           "frequency": s.frequency,
+                           "method": ["EMAIL"] #s.method,
+                           })
+
+        else:
+            # Form defaults
+            output.update({"id": None,
+                           "filter_id": None,
+                           "get_vars" : get_vars,
+                           "resources": None,
+                           "notify_on": stable.notify_on.default,
+                           "frequency": stable.frequency.default,
+                           "method": ["EMAIL"] #stable.method.default
+                           })
+
+        return output
+
+    # -------------------------------------------------------------------------
+    def update_subscription(self):
+        """ 
+            Update subscription settings 
+        """
+
+        db = current.db
+        s3db = current.s3db
+        subscription = self.subscription
+        pe_id = subscription["pe_id"]
+
+        # Save filters
+        filter_id = subscription["filter_id"]
+        filters = subscription.get("filters")
+        if filters:
+            ftable = s3db.pr_filter
+
+            if not filter_id:
+                success = ftable.insert(pe_id=pe_id, query=filters)
+                filter_id = success
+            else:
+                success = db(ftable.id == filter_id).update(query=filters)
+            if not success:
+                return None
+
+        # Save subscription settings
+        stable = s3db.pr_subscription
+        subscription_id = subscription["id"]
+        frequency = subscription["frequency"]
+        if not subscription_id:
+            success = stable.insert(pe_id=pe_id,
+                                    filter_id=filter_id,
+                                    notify_on=subscription["notify_on"],
+                                    frequency=frequency,
+                                    method=subscription["method"])
+            subscription_id = success
+        else:
+            success = db(stable.id == subscription_id).update(
+                            pe_id=pe_id,
+                            filter_id=filter_id,
+                            notify_on=subscription["notify_on"],
+                            frequency=frequency,
+                            method=subscription["method"])
+        if not success:
+            return None
+
+        # Save subscriptions
+        rtable = s3db.pr_subscription_resource
+        subscribe = subscription.get("subscribe")
+        if subscribe:
+            from datetime import datetime, timedelta
+            now = datetime.utcnow()
+            resources = subscription["resources"]
+
+            subscribed = {}
+            timestamps = {}
+            if resources:
+                for r in resources:
+                    subscribed[(r.resource, r.url)] = r.id
+                    timestamps[r.id] = (r.last_check_time,
+                                        r.next_check_time)
+
+            intervals = s3db.pr_subscription_check_intervals
+            interval = timedelta(minutes=intervals.get(frequency, 0))
+
+            keep = set()
+            fk = '''{"subscription_id": %s}''' % subscription_id
+            for new in subscribe:
+                resource, url = new["resource"], new["url"]
+                if (resource, url) not in subscribed:
+                    # Restore subscription if previously unsubscribed, else
+                    # insert new record
+                    unsubscribed = {"deleted": True,
+                                    "deleted_fk": fk,
+                                    "resource": resource,
+                                    "url": url}
+                    rtable.update_or_insert(_key=unsubscribed,
+                                            deleted=False,
+                                            deleted_fk=None,
+                                            subscription_id=subscription_id,
+                                            resource=resource,
+                                            url=url,
+                                            last_check_time=now,
+                                            next_check_time=None)
+                else:
+                    # Keep it
+                    record_id = subscribed[(resource, url)]
+                    last_check_time, next_check_time = timestamps[record_id]
+                    data = {}
+                    if not last_check_time:
+                        # Someone has tampered with the timestamps, so
+                        # we need to reset them and start over
+                        last_check_time = now
+                        data["last_check_time"] = last_check_time
+                    due = last_check_time + interval
+                    if next_check_time != due:
+                        # Time interval has changed
+                        data["next_check_time"] = due
+                    if data:
+                        db(rtable.id == record_id).update(**data)
+                    keep.add(record_id)
+
+            # Unsubscribe all others
+            unsubscribe = set(subscribed.values()) - keep
+            db(rtable.id.belongs(unsubscribe)).update(deleted=True,
+                                                      deleted_fk=fk,
+                                                      subscription_id=None)
+
+        # Update subscription
+        subscription["id"] = subscription_id
+        subscription["filter_id"] = filter_id
+        return subscription
+
+# =============================================================================
 
 # -----------------------------------------------------------------------------
 # Comment/uncomment modules here to disable/enable them

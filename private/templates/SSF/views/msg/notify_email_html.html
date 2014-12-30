@@ -1,0 +1,15 @@
+<html>
+<body>
+{{title="%s: %s" % (systemname_short, current.T("Task Notifications"))}}
+<div style='border-bottom: 1px solid #eee;
+            margin: 40px 0 20px; 
+            padding-bottom: 9px;'>
+  <h2>{{=XML(title)}}</h2>
+</div>
+{{if filter_query:}}
+<p><b>Subscribed to</b> {{=XML(filter_query)}}</p>
+<br>
+{{pass}}
+{{=body}}
+</body>
+</html>
